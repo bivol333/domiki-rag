@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Data (sensitive content stays local)
+data/raw_pdfs/private/**
+data/raw_pdfs/public/*
+!data/raw_pdfs/public/.gitkeep
+data/processed/**
+!data/processed/.gitkeep
+data/qdrant/**
+!data/qdrant/.gitkeep
+
+# Allow eval test cases (sanitized only)
+!data/eval/**
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log
+logs/
+
+# Notebook artifacts
+.ipynb_checkpoints/
