@@ -1,21 +1,33 @@
 # Domiki RAG
 
-Σύστημα Q&A πάνω σε ελληνική πολεοδομική/κατασκευαστική νομοθεσία για πολιτικούς μηχανικούς.
-RAG (Retrieval-Augmented Generation) αρχιτεκτονική με δημόσιες πηγές + προσωπικές σημειώσεις.
+**Βοηθός Ελληνικής Πολεοδομικής Νομοθεσίας** — Q&A σύστημα πάνω σε ελληνικές πολεοδομικές και κατασκευαστικές νόμους για πολιτικούς μηχανικούς, αρχιτέκτονες και τεχνικούς επαγγελματίες.
 
-## Status: Φάση 0 - Setup
+> **⚠ Beta / Research Tool** — Αυτό το εργαλείο παρέχεται αποκλειστικά για ερευνητική και προσωπική χρήση. Δεν αποτελεί νομική συμβουλή. Επαληθεύετε πάντα τα αποτελέσματα με τις πρωτογενείς πηγές (ΦΕΚ, επίσημα κείμενα νόμων).
+
+## Τι κάνει
+
+Χρησιμοποιεί RAG (Retrieval-Augmented Generation) αρχιτεκτονική:
+1. **Retrieval** — υβριδική αναζήτηση (dense Cohere + sparse BM25) σε Qdrant vector DB
+2. **Reranking** — Cohere Rerank 3 για ακρίβεια
+3. **Generation** — Claude (Anthropic) δημιουργεί τεκμηριωμένη απάντηση με υποχρεωτικές αναφορές σε άρθρα και σελίδες
+
+## Status
+
+- [x] Φάση 1: Ingestion (PDF → chunks + metadata)
+- [x] Φάση 2: Retrieval (hybrid search + reranking)
+- [x] Φάση 3: Generation + Streamlit UI
+- [x] Φάση 4: Query logging, history, feedback, admin view, site password gate
+- [ ] Φάση 5: Evaluation iteration & scale
 
 ## Προαπαιτούμενα
 
 - Python 3.11+
-- Docker Desktop εγκατεστημένο και να τρέχει
-- API keys:
-  - Anthropic (console.anthropic.com)
-  - Cohere (cohere.com)
+- Docker Desktop (για local Qdrant)
+- API keys: [Anthropic](https://console.anthropic.com), [Cohere](https://cohere.com)
 
-## Setup βήμα-βήμα
+## Local Development Setup
 
-### 1. Εγκατάσταση `uv` (modern Python package manager)
+### 1. Εγκατάσταση `uv`
 
 ```bash
 # Windows (PowerShell)
@@ -32,71 +44,93 @@ cd domiki-rag
 uv sync
 ```
 
-Αυτό φτιάχνει αυτόματα το `.venv` και κατεβάζει όλες τις εξαρτήσεις.
-
 ### 3. Configure environment
 
 ```bash
 cp .env.example .env
+# Edit .env and add your API keys
 ```
 
-Άνοιξε το `.env` και βάλε τα δικά σου API keys.
+Required vars:
+```
+ANTHROPIC_API_KEY=sk-ant-...
+COHERE_API_KEY=...
+SITE_PASSWORD=<your-beta-password>
+ADMIN_PASSWORD=<your-admin-password>
+```
 
-### 4. Ξεκίνα το Qdrant με Docker
+### 4. Start local Qdrant
 
 ```bash
 docker compose up -d
 ```
 
-Έλεγχος ότι τρέχει: άνοιξε browser στο `http://localhost:6333/dashboard`
+Dashboard: `http://localhost:6333/dashboard`
 
-### 5. Επαλήθευση setup
+### 5. Verify setup
 
 ```bash
 uv run python scripts/verify_setup.py
 ```
 
-Αν όλα είναι πράσινα, είσαι έτοιμος για Φάση 1.
+### 6. Run the app
+
+```bash
+uv run streamlit run ui/streamlit_app.py
+```
+
+### 7. CLI usage
+
+```bash
+uv run python scripts/ask.py "Πώς υπολογίζεται το πρόστιμο αυθαίρετης κατασκευής;"
+```
 
 ## Project Structure
 
 ```
 domiki-rag/
 ├── src/
-│   ├── ingestion/      # PDF → chunks + metadata
-│   ├── indexing/       # Embeddings + vector store
-│   ├── retrieval/      # Hybrid search + reranking
-│   ├── generation/     # Claude prompts + citations
-│   └── api/            # FastAPI endpoints (αργότερα)
-├── ui/                 # Streamlit UI
-├── scripts/            # Utility scripts (ingest, verify, eval)
-├── tests/              # Pytest tests
+│   ├── ingestion/       # PDF → chunks + metadata
+│   ├── indexing/        # Embeddings + Qdrant upsert
+│   ├── retrieval/       # Hybrid search + reranking
+│   ├── generation/      # Claude prompts + citations
+│   ├── pipeline/        # QA orchestration
+│   ├── observability/   # Query logging (SQLite)
+│   └── common/          # Shared tokenizer
+├── ui/
+│   ├── streamlit_app.py # Main UI (site-password gated)
+│   └── pages/
+│       └── 1_Admin.py   # Admin view (admin-password gated)
+├── scripts/
+│   ├── ask.py           # CLI Q&A
+│   ├── ingest.py        # Ingest PDFs
+│   ├── migrate_to_cloud.py  # Copy local Qdrant → cloud
+│   └── verify_setup.py  # Pre-flight checks
+├── tests/               # Pytest test suite (142 tests)
 ├── data/
 │   ├── raw_pdfs/
-│   │   ├── public/     # Δημόσιες πηγές (ΦΕΚ, εγκύκλιοι)
-│   │   └── private/    # Domiki content (gitignored, personal only)
-│   ├── processed/      # Parsed text + metadata
-│   ├── qdrant/         # Qdrant persistent storage
-│   └── eval/           # Test cases
-├── docker-compose.yml  # Qdrant container
-├── pyproject.toml      # Dependencies
-└── .env                # API keys (gitignored)
+│   │   ├── public/      # Public sources (ΦΕΚ) — safe to commit metadata
+│   │   └── private/     # Subscription content (gitignored, personal use only)
+│   ├── processed/       # Parsed chunks (gitignored)
+│   ├── qdrant/          # Vector DB storage (gitignored)
+│   └── eval/            # Evaluation test cases
+├── docker-compose.yml
+└── pyproject.toml
 ```
 
-## Roadmap
+## Running Tests
 
-- [x] Φάση 0: Setup (αυτό)
-- [ ] Φάση 1: Ingestion MVP
-- [ ] Φάση 2: Retrieval MVP
-- [ ] Φάση 3: Generation + UI MVP
-- [ ] Φάση 4: Evaluation framework
-- [ ] Φάση 5: Iteration & scale
+```bash
+uv run pytest tests/
+```
 
-## Σημαντικές σημειώσεις
+## Legal & Privacy Notes
 
-**Νομικά**: Το `data/raw_pdfs/private/` περιέχει υλικό από συνδρομητικές πηγές
-(Δομική Πληροφορική) και είναι **personal use only**. Δεν διανέμεται, δεν
-γίνεται commit, δεν συμπεριλαμβάνεται σε εμπορική έκδοση.
+- `data/raw_pdfs/private/` contains material from subscription services and is **personal use only** — never committed, never distributed.
+- The two Qdrant collections (`domiki_public` and `domiki_private`) are kept physically separate.
+- **This is NOT legal advice.** Every answer includes source citations for your own verification. Always consult a licensed engineer or lawyer for official guidance.
+- Results depend on which documents have been indexed; the system does not have access to all Greek legislation.
 
-**Disclaimer**: Το σύστημα είναι assistant tool, όχι authoritative source.
-Κάθε απάντηση περιλαμβάνει citations για επαλήθευση.
+## License
+
+All rights reserved. See [LICENSE](LICENSE).

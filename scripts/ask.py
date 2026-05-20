@@ -2,11 +2,13 @@
 import argparse
 import asyncio
 import logging
+import socket
 import sys
 
 from src.generation.answer_generator import AnswerGenerator
 from src.generation.claude_client import ClaudeClient
 from src.generation.models import AnswerResponse
+from src.observability.logger import QueryLogger
 from src.pipeline.qa_pipeline import QAPipeline
 from src.retrieval.retriever import Retriever
 
@@ -19,8 +21,12 @@ def _estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
     return (input_tokens / 1_000_000) * 3.0 + (output_tokens / 1_000_000) * 15.0
 
 
-def _print_streaming(pipeline: QAPipeline, query: str, top_k: int) -> AnswerResponse:
-    tokens = asyncio.run(pipeline.ask_stream(query=query, top_k=top_k))
+def _print_streaming(
+    pipeline: QAPipeline, query: str, top_k: int, session_id: str,
+) -> AnswerResponse:
+    tokens = asyncio.run(
+        pipeline.ask_stream(query=query, session_id=session_id, top_k=top_k),
+    )
     print()
     for delta in tokens:
         sys.stdout.write(delta)
@@ -68,16 +74,30 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--json", action="store_true", help="Εκτύπωση AnswerResponse ως JSON")
+    parser.add_argument(
+        "--session-id",
+        default=f"cli-{socket.gethostname()}",
+        help="Session id under which to log this query (default: cli-{hostname})",
+    )
+    parser.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Skip persisting this query to data/logs.db",
+    )
     args = parser.parse_args()
 
     retriever = Retriever()
     generator = AnswerGenerator(ClaudeClient())
-    pipeline = QAPipeline(retriever, generator)
+    query_logger = None if args.no_log else QueryLogger()
+    pipeline = QAPipeline(retriever, generator, query_logger=query_logger)
+    session_id = None if args.no_log else args.session_id
 
     if args.no_stream or args.json:
-        response = asyncio.run(pipeline.ask(query=args.query, top_k=args.top_k))
+        response = asyncio.run(
+            pipeline.ask(query=args.query, session_id=session_id, top_k=args.top_k),
+        )
     else:
-        response = _print_streaming(pipeline, args.query, args.top_k)
+        response = _print_streaming(pipeline, args.query, args.top_k, session_id)
 
     if args.json:
         print(response.model_dump_json(indent=2))

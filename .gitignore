@@ -14,19 +14,23 @@ env/
 dist/
 build/
 
-# Environment
+# Environment / secrets
 .env
 .env.local
 .env.*.local
+.streamlit/secrets.toml
 
-# Data (sensitive content stays local)
+# Data - sensitive content stays local
 data/raw_pdfs/private/**
-data/raw_pdfs/public/*
+!data/raw_pdfs/private/.gitkeep
+data/raw_pdfs/public/*.pdf
 !data/raw_pdfs/public/.gitkeep
 data/processed/**
 !data/processed/.gitkeep
 data/qdrant/**
 !data/qdrant/.gitkeep
+data/qdrant_backup*/**
+data/logs.db*
 
 # Allow eval test cases (sanitized only)
 !data/eval/**
@@ -41,12 +45,12 @@ data/qdrant/**
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/secrets.toml
-
 # Logs
 *.log
 logs/
 
 # Notebook artifacts
 .ipynb_checkpoints/
+
+# Private working documents (contain real credential examples)
+docs/phase4c-cleanup-prompt.md

@@ -24,3 +24,4 @@ class AnswerResponse(BaseModel):
     has_invalid_citations: bool = False
     timing: dict[str, float]
     token_usage: dict[str, int]
+    query_id: int | None = None  # set when the response has been persisted by QueryLogger
