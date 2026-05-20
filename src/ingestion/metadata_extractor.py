@@ -37,20 +37,83 @@ _ISSUING_BODY_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"ΤΕΧΝΙΚ(?:Ο|Η)\s+ΕΠΙΜΕΛΗΤΗΡΙ", re.IGNORECASE), "ΤΕΕ"),
 ]
 
-_SOURCE_TYPE_RULES: list[tuple[re.Pattern, SourceType]] = [
-    (re.compile(r"^FEK_|^ΦΕΚ_", re.IGNORECASE), "fek"),
-    (re.compile(r"ΣτΕ|STE", re.IGNORECASE), "court_decision"),
-    (re.compile(r"^ΠΔ_|^PD_|Π\.Δ\.", re.IGNORECASE), "presidential_decree"),
-    (re.compile(r"εγκύκλι|egkyf", re.IGNORECASE), "circular"),
-    (re.compile(r"^Ν_|^N_|νόμος|^law_", re.IGNORECASE), "law"),
+# ── Source type detection ─────────────────────────────────────────────────────
+# Filename-based rules have highest priority (reliable, set by a human).
+# Content-based rules apply only when the filename gives no clear signal.
+# Presidential decree is checked BEFORE court_decision to prevent ΣτΕ cross-
+# references in the body from misclassifying PD documents.
+
+_FILENAME_TYPE_RULES: list[tuple[re.Pattern, SourceType]] = [
+    (re.compile(r"^FEK[-_]|^ΦΕΚ[-_]", re.IGNORECASE), "fek"),
+    (re.compile(r"^(?:ΠΔ|PD)[-_]", re.IGNORECASE), "presidential_decree"),
+    (re.compile(r"^(?:Ν|N)[-_]?\d|^law[-_]", re.IGNORECASE), "law"),
+    (re.compile(r"egkykl|egkyf", re.IGNORECASE), "circular"),
+]
+
+_CONTENT_TYPE_RULES: list[tuple[re.Pattern, SourceType]] = [
+    (re.compile(r"ΠΡΟΕΔΡΙΚ[ΟΗ]\s+ΔΙΑΤΑΓΜ|Π\.Δ\.\s*\d", re.IGNORECASE), "presidential_decree"),
+    (re.compile(r"εγκύκλι", re.IGNORECASE), "circular"),
+    (re.compile(r"ΣτΕ\b|STE\b|ΣΥΜΒΟΥΛΙ[ΟΩ]\s+ΤΗΣ\s+ΕΠΙΚΡΑΤΕΙΑΣ", re.IGNORECASE), "court_decision"),
+    (re.compile(r"νόμος\b", re.IGNORECASE), "law"),
     (re.compile(r"υπουργ|minister", re.IGNORECASE), "ministerial_decision"),
     (re.compile(r"τεχνικ.*(οδηγ|κανον)|ΤΟΤΕΕ|ΚΕΝΑΚ", re.IGNORECASE), "technical_spec"),
 ]
 
+# ── Filename law-number extraction ────────────────────────────────────────────
+# Parses common naming conventions used for Greek legal documents.
+# Examples:
+#   PD-41-2018-Pyroprostasia.pdf  → Π.Δ. 41/2018
+#   N4178-2013-Old-Authaireta.pdf → Ν. 4178/2013
+#   n44952017-demo.pdf            → Ν. 4495/2017
+#   N_4495_2017.pdf               → Ν. 4495/2017
+
+_FILENAME_PD_RE = re.compile(
+    r"(?:^|[-_.])"           # start of name or separator
+    r"(?:PD|ΠΔ)"             # presidential decree prefix
+    r"[-_]?"                 # optional separator before number
+    r"(\d{1,5})"             # decree number
+    r"[-_]"                  # mandatory separator before year
+    r"(\d{4})",              # 4-digit year
+    re.IGNORECASE,
+)
+
+_FILENAME_N_RE = re.compile(
+    r"(?:^|[-_.])"           # start or separator
+    r"(?:N|Ν)"               # law (nomos) prefix
+    r"[-_]?"                 # optional separator
+    r"(\d{2,5})"             # law number (2–5 digits)
+    r"[-_]?"                 # optional separator
+    r"((?:19|20)\d{2})"      # year (19xx or 20xx)
+    r"(?:[-_.]|$)",          # followed by separator or end of string
+    re.IGNORECASE,
+)
+
+
+def _law_ref_from_filename(filename: str) -> str | None:
+    """Try to extract the document's own law/decree reference from its filename.
+
+    This is more reliable than body-text frequency analysis because filenames
+    are set intentionally (e.g. PD-41-2018-... → Π.Δ. 41/2018).
+    Returns None when the filename follows no recognised pattern.
+    """
+    m = _FILENAME_PD_RE.search(filename)
+    if m:
+        return f"Π.Δ. {m.group(1)}/{m.group(2)}"
+    m = _FILENAME_N_RE.search(filename)
+    if m:
+        return f"Ν. {m.group(1)}/{m.group(2)}"
+    return None
+
 
 def _infer_source_type(filename: str, head_text: str) -> SourceType:
-    for pattern, stype in _SOURCE_TYPE_RULES:
-        if pattern.search(filename) or pattern.search(head_text[:500]):
+    """Infer document type from filename (priority) then content."""
+    # Filename rules fire first — they are set by a human and are unambiguous
+    for pattern, stype in _FILENAME_TYPE_RULES:
+        if pattern.search(filename):
+            return stype
+    # Content rules apply when filename gives no signal
+    for pattern, stype in _CONTENT_TYPE_RULES:
+        if pattern.search(head_text[:500]):
             return stype
     return "other"
 
@@ -101,7 +164,10 @@ def _extract_title(text: str) -> str | None:
 
 
 def _primary_law_ref(pages: list[PageContent]) -> str | None:
-    """Return canonical law ref with highest frequency across the full document."""
+    """Return canonical law ref with highest frequency across the full document.
+
+    Used as fallback when filename-based extraction is not available.
+    """
     full_text = "\n".join(unicodedata.normalize("NFC", p.text) for p in pages)
     head_500 = full_text[:500]
 
@@ -132,7 +198,11 @@ def extract_metadata(
     head_pages = pages[:3]
     head_text = "\n".join(unicodedata.normalize("NFC", p.text) for p in head_pages)
 
-    law_number = _primary_law_ref(pages)  # frequency-based, full document
+    # Law number: filename wins (prevents body cross-references from contaminating identity)
+    law_number = _law_ref_from_filename(source_file)
+    if law_number is None:
+        law_number = _primary_law_ref(pages)
+
     fek_refs = extract_fek_refs(head_text)
     fek_ref = fek_refs[0] if fek_refs else None
     issue_date = _extract_date(head_text)

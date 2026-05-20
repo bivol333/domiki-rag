@@ -76,7 +76,10 @@ def diagnose(fname: str) -> None:
         elif empty_pages > 0:
             print("  DIAGNOSIS: Some pages have no extractable text - mixed content")
         else:
-            print("  DIAGNOSIS: Text extracts fine via PyMuPDF - failure is likely in chunking/structure stage, not parsing")
+            print(
+                "  DIAGNOSIS: Text extracts fine via PyMuPDF"
+                " - failure is likely in chunking/structure stage, not parsing"
+            )
 
         # Check for encoding issues (mojibake)
         if page1_text and any(ord(c) > 0x2000 and ord(c) < 0x2100 for c in page1_text[:500]):

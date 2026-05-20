@@ -2,10 +2,83 @@
 import re
 import unicodedata
 
-# Article: must start at beginning of a line (after optional whitespace)
-ARTICLE_RE = re.compile(r"^\s*Άρθρο\s+(\d+[α-ωΑ-Ω]?)\b", re.MULTILINE)
+# ── Article heading patterns ──────────────────────────────────────────────────
+#
+# Covers all documented variants:
+#   Digit-numbered:  Άρθρο 5, Άρθρο 5α, Άρθρο 5Α
+#                    Άρθρον 5 (καθαρεύουσα), ΑΡΘΡΟ 5, ΑΡΘΡΟΝ 5 (uppercase)
+#                    Άρθ. 5, Αρθρ. 5, Αρθ. 5 (abbreviations)
+#                    With/without tonos: Αρθρο / Άρθρο
+#                    Optional period/colon after number: Άρθρο 5. / Άρθρο 5:
+#   Ordinal:         Άρθρο Πρώτο, Άρθρο Δεύτερο, ... Άρθρο Εικοστό
+#                    ΑΡΘΡΟ ΠΡΩΤΟ (uppercase)
+#
+# All patterns require line-start anchoring (re.MULTILINE) to avoid matching
+# mid-sentence cross-references like "σύμφωνα με το άρθρο 5".
 
-# Paragraph: several forms used in Greek law
+_ART_PREFIXES = (
+    r"ΆΡΘΡΟ[Ν]?"    # uppercase Greek WITH tonos
+    r"|ΑΡΘΡΟ[Ν]?"   # uppercase Greek WITHOUT tonos (all-caps)
+    r"|Άρθρο[ν]?"   # title-case WITH tonos
+    r"|Αρθρο[ν]?"   # title-case WITHOUT tonos
+    r"|ΑΡΘ\."       # uppercase abbreviation
+    r"|Άρθ\."       # mixed-case abbreviation WITH tonos
+    r"|Αρθρ\."      # mixed-case abbreviation (longer)
+    r"|Αρθ\."       # mixed-case abbreviation (shorter)
+)
+
+# Digit-numbered articles: captures number in group(1), optional letter suffix in group(2).
+# NOTE: no \s* between number and suffix — the suffix must immediately follow the digit,
+# otherwise newlines are consumed and the first letter of the next line is captured.
+ARTICLE_DIGIT_RE = re.compile(
+    rf"^\s*(?:{_ART_PREFIXES})\s+(\d+)([Α-Ωα-ω]?)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Word-ordinal articles: captures ordinal word in group(1)
+# Uses [^\W\d]+ to match Unicode word chars that are NOT digits (avoids matching "5")
+ARTICLE_ORDINAL_RE = re.compile(
+    rf"^\s*(?:{_ART_PREFIXES})\s+([^\W\d]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# ── Greek ordinal → integer mapping ──────────────────────────────────────────
+# Stems (after diacritic-stripping and casefold) keyed by unambiguous prefix.
+# Order matters: longer stems before shorter prefixes that could overlap.
+_GREEK_ORDINAL_STEMS: list[tuple[str, int]] = [
+    ("ενδεκατ", 11),   # ενδέκατο (must come before "ενατ")
+    ("δωδεκατ", 12),
+    ("εικοστ", 20),
+    ("δευτερ", 2),
+    ("τεταρτ", 4),
+    ("πεμπτ", 5),
+    ("εβδομ", 7),
+    ("ενατ", 9),       # ένατο
+    ("δεκατ", 10),
+    ("πρωτ", 1),       # πρώτο, πρώτον
+    ("τριτ", 3),
+    ("εκτ", 6),
+    ("ογδο", 8),
+]
+
+
+def _strip_diacritics(text: str) -> str:
+    """Remove Greek diacritics (tonos/varia/oxia) for accent-insensitive matching."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
+
+
+def _ordinal_to_int(word: str) -> int | None:
+    """Map a Greek ordinal word (any case, any accentuation) to its integer value."""
+    normalized = _strip_diacritics(word.casefold())
+    for stem, num in _GREEK_ORDINAL_STEMS:
+        if normalized.startswith(stem):
+            return num
+    return None
+
+
+# ── Paragraph detection ───────────────────────────────────────────────────────
 PARAGRAPH_RE = re.compile(
     r"(?:^|\n)\s*(?:"
     r"(\d+)\.\s"  # "1. Text..."
@@ -15,7 +88,7 @@ PARAGRAPH_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# ΦΕΚ reference — many spacing variants
+# ── ΦΕΚ reference ─────────────────────────────────────────────────────────────
 FEK_RE = re.compile(
     r"Φ\.?\s*Ε\.?\s*Κ\.?\s+"
     r"(?:τε[υύ]χο[υς]?\s+)?"
@@ -25,7 +98,8 @@ FEK_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Law number — Greek forms; group(1)=prefix, group(2)=number, group(3)=year
+# ── Law number — Greek forms ──────────────────────────────────────────────────
+# group(1)=prefix, group(2)=number, group(3)=year
 LAW_RE = re.compile(
     r"(Ν\.?(?:όμος)?|Π\.?Δ\.?|Υ\.?Α\.?)\s*"
     r"(\d+)\s*/\s*(\d{2,4})",
@@ -56,12 +130,34 @@ def _nfc(text: str) -> str:
 
 
 def find_articles(text: str) -> list[tuple[int, str]]:
-    """Return (start_pos, article_label) for each article heading found."""
+    """Return (start_pos, article_label) for each article heading found.
+
+    Labels are canonical:
+    - Digit-numbered: "Άρθρο 5", "Άρθρο 5α"
+    - Ordinal: "Άρθρο 1" (Πρώτο → 1, Δεύτερο → 2, ...)
+    """
     text = _nfc(text)
-    results = []
-    for m in ARTICLE_RE.finditer(text):
-        label = f"Άρθρο {m.group(1)}"
+    results: list[tuple[int, str]] = []
+    seen: set[int] = set()
+
+    # ① Digit-numbered articles
+    for m in ARTICLE_DIGIT_RE.finditer(text):
+        number = m.group(1)
+        suffix = m.group(2) or ""
+        label = f"Άρθρο {number}{suffix}"
         results.append((m.start(), label))
+        seen.add(m.start())
+
+    # ② Word-ordinal articles (e.g. "Άρθρο Πρώτο", "ΑΡΘΡΟ ΠΡΩΤΟ")
+    for m in ARTICLE_ORDINAL_RE.finditer(text):
+        pos = m.start()
+        if pos in seen:
+            continue
+        num = _ordinal_to_int(m.group(1))
+        if num is not None:
+            results.append((pos, f"Άρθρο {num}"))
+
+    results.sort(key=lambda x: x[0])
     return results
 
 

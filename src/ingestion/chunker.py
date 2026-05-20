@@ -191,7 +191,11 @@ def chunk_pages(pages: list[PageContent], doc: DocumentMetadata) -> list[Chunk]:
     chunks: list[Chunk] = []
 
     if not articles:
-        # No article structure — chunk the whole document
+        # No article structure — fall back to sliding-window chunking
+        logger.warning(
+            "No articles detected in %s — falling back to sliding-window chunking",
+            doc.source_file,
+        )
         total_tokens = _count_tokens(full_text)
         if total_tokens <= MAX_TOKENS:
             if total_tokens >= MIN_TOKENS:

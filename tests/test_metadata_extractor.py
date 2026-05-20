@@ -1,7 +1,7 @@
 """Tests for metadata_extractor."""
 from datetime import date
 
-from src.ingestion.metadata_extractor import extract_metadata
+from src.ingestion.metadata_extractor import _law_ref_from_filename, extract_metadata
 from src.ingestion.pdf_parser import PageContent
 
 
@@ -118,3 +118,78 @@ class TestTitleBugFixes:
         meta = extract_metadata(pages=[_make_page(text)], source_file="egk.pdf", scope="public")
         assert meta.title is not None
         assert "Διευκρινίσεις" in meta.title
+
+
+class TestFilenameBasedLawExtraction:
+    """Filename-first law number extraction (Phase 4d Addition 2)."""
+
+    def test_pd_hyphen_filename(self):
+        assert _law_ref_from_filename("PD-41-2018-Pyroprostasia.pdf") == "Π.Δ. 41/2018"
+
+    def test_n_hyphen_filename(self):
+        assert _law_ref_from_filename("N4178-2013-Old-Authaireta.pdf") == "Ν. 4178/2013"
+
+    def test_n_no_separator_filename(self):
+        assert _law_ref_from_filename("n44952017-demo.pdf") == "Ν. 4495/2017"
+
+    def test_n_underscore_filename(self):
+        assert _law_ref_from_filename("N_4495_2017.pdf") == "Ν. 4495/2017"
+
+    def test_unknown_filename_returns_none(self):
+        assert _law_ref_from_filename("egkyklios.pdf") is None
+        assert _law_ref_from_filename("document.pdf") is None
+
+    def test_pd41_law_number_wins_over_body_cross_refs(self):
+        """Filename extraction must win even when body text has many cross-references."""
+        # Body text has Π.Δ. 71/1988 repeated 10 times — the old bug
+        body = "Π.Δ. 71/1988 " * 10
+        pages = [_make_page(body)]
+        meta = extract_metadata(pages, "PD-41-2018-Pyroprostasia.pdf", "public")
+        assert meta.law_number == "Π.Δ. 41/2018"
+
+    def test_n4178_law_number_wins_over_body_cross_refs(self):
+        body = "Ν. 998/1979 " * 10  # older cross-referenced law
+        pages = [_make_page(body)]
+        meta = extract_metadata(pages, "N4178-2013-Old-Test.pdf", "public")
+        assert meta.law_number == "Ν. 4178/2013"
+
+    def test_circular_without_law_in_filename_uses_frequency(self):
+        """Circulars (egkyklios.pdf) have no law in filename → frequency fallback."""
+        page1 = _make_page("Ν. 3852/2010 αναφέρεται εδώ\nΚείμενο σελίδας 1", 1)
+        page2 = _make_page(
+            "Ν. 4495/2017 Ν. 4495/2017 Ν. 4495/2017 Ν. 4495/2017 Ν. 4495/2017",
+            2,
+        )
+        meta = extract_metadata([page1, page2], "egkyklios.pdf", "public")
+        assert meta.law_number is not None
+        assert "4495" in meta.law_number
+
+
+class TestSourceTypeFixes:
+    """Source type classification fixes (Phase 4d Addition 2)."""
+
+    def test_pd_hyphen_filename_is_presidential_decree(self):
+        """PD-41-2018 must be presidential_decree even when body has ΣτΕ."""
+        pages = [_make_page("ΣτΕ 1234/2000 αναφέρεται ως παράδειγμα")]
+        meta = extract_metadata(pages, "PD-41-2018-Pyroprostasia.pdf", "public")
+        assert meta.source_type == "presidential_decree"
+
+    def test_pd_uppercase_filename_is_presidential_decree(self):
+        pages = [_make_page("Κείμενο")]
+        meta = extract_metadata(pages, "PD-41-2018.pdf", "public")
+        assert meta.source_type == "presidential_decree"
+
+    def test_fek_filename_still_fek(self):
+        pages = [_make_page("ΦΕΚ ΤΕΥΧΟΣ ΠΡΩΤΟ")]
+        meta = extract_metadata(pages, "FEK_A_167_2017.pdf", "public")
+        assert meta.source_type == "fek"
+
+    def test_ste_content_is_court_decision_when_filename_unknown(self):
+        pages = [_make_page("ΣΥΜΒΟΥΛΙΟ ΤΗΣ ΕΠΙΚΡΑΤΕΙΑΣ\nΑπόφαση 1234/2020")]
+        meta = extract_metadata(pages, "decision.pdf", "public")
+        assert meta.source_type == "court_decision"
+
+    def test_presidential_decree_in_content_when_filename_unknown(self):
+        pages = [_make_page("ΠΡΟΕΔΡΙΚΟ ΔΙΑΤΑΓΜΑ ΥΠ ΑΡΙΘΜ. 100")]
+        meta = extract_metadata(pages, "document.pdf", "public")
+        assert meta.source_type == "presidential_decree"
