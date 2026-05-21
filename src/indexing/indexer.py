@@ -68,24 +68,32 @@ def _chunk_payload(chunk: Chunk) -> dict:
     }
 
 
-def index_chunks(
-    chunks: list[Chunk],
-    collection: str,
-    client: QdrantClient | None = None,
-) -> None:
-    """Embed and upsert chunks into Qdrant. Same chunk_id overwrites idempotently."""
-    if not chunks:
-        logger.info("No chunks to index into '%s'", collection)
-        return
+def prepare_points(chunks: list[Chunk], source_hint: str = "") -> list[PointStruct]:
+    """Embed chunks and build PointStructs — no Qdrant writes.
 
-    if client is None:
-        client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
+    Separating this from the upsert step allows callers to embed ALL files before
+    touching the collection (two-phase rebuild pattern: embed everything first,
+    only wipe the collection once all embeddings succeed).
+
+    Args:
+        chunks: Chunks to embed.
+        source_hint: Filename or label forwarded to the embedder for log messages.
+
+    Returns:
+        List of PointStruct objects ready for upsert.
+
+    Raises:
+        cohere.TooManyRequestsError: Rate limit exhausted after all retries.
+        RuntimeError: Any other embedding failure after all retries.
+    """
+    if not chunks:
+        return []
 
     texts = [c.text for c in chunks]
-    logger.info("Embedding %d chunks for '%s'...", len(chunks), collection)
-    dense_vecs = embed_chunks(texts, input_type="search_document")
+    logger.info("Embedding %d chunks%s...", len(chunks), f" ({source_hint})" if source_hint else "")
+    dense_vecs = embed_chunks(texts, input_type="search_document", source_hint=source_hint)
 
-    logger.info("Computing BM25 sparse vectors...")
+    logger.info("Computing BM25 sparse vectors%s...", f" ({source_hint})" if source_hint else "")
     sparse_dicts = _compute_bm25_sparse_vectors(chunks)
 
     points: list[PointStruct] = []
@@ -105,6 +113,15 @@ def index_chunks(
             )
         )
 
+    return points
+
+
+def upsert_points(
+    points: list[PointStruct],
+    collection: str,
+    client: QdrantClient,
+) -> None:
+    """Upsert pre-built PointStructs into Qdrant in batches."""
     for batch_start in range(0, len(points), _UPSERT_BATCH):
         batch = points[batch_start : batch_start + _UPSERT_BATCH]
         client.upsert(collection_name=collection, points=batch)
@@ -114,3 +131,26 @@ def index_chunks(
             len(points),
             collection,
         )
+
+
+def index_chunks(
+    chunks: list[Chunk],
+    collection: str,
+    client: QdrantClient | None = None,
+    source_hint: str = "",
+) -> None:
+    """Embed and upsert chunks into Qdrant. Same chunk_id overwrites idempotently.
+
+    Convenience wrapper around prepare_points() + upsert_points().
+    For rebuild scenarios, call those functions directly to control the order
+    of embedding vs. collection wipe.
+    """
+    if not chunks:
+        logger.info("No chunks to index into '%s'", collection)
+        return
+
+    if client is None:
+        client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
+
+    points = prepare_points(chunks, source_hint=source_hint)
+    upsert_points(points, collection, client)

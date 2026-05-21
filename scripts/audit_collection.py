@@ -98,9 +98,9 @@ def main() -> None:
             print(f"  WARNING: {s['pua_noise']} chunks still contain PUA glyphs")
         # Flag suspicious: multiple law numbers in one file = likely cross-reference contamination
         if len(s["law_numbers"]) > 1:
-            print(f"  FLAG: multiple law_numbers in one file - possible metadata contamination")
+            print("  FLAG: multiple law_numbers in one file - possible metadata contamination")
         if not s["law_numbers"]:
-            print(f"  FLAG: no law_number detected")
+            print("  FLAG: no law_number detected")
 
     print("\n" + "=" * 80)
     print("SUMMARY")

@@ -193,3 +193,116 @@ class TestSourceTypeFixes:
         pages = [_make_page("ΠΡΟΕΔΡΙΚΟ ΔΙΑΤΑΓΜΑ ΥΠ ΑΡΙΘΜ. 100")]
         meta = extract_metadata(pages, "document.pdf", "public")
         assert meta.source_type == "presidential_decree"
+
+
+class TestOnDiskFilenames:
+    """Regression tests using the exact filenames from data/raw_pdfs/public/.
+
+    These guard against regressions in filename-based law/type extraction
+    for every PDF currently in the corpus.
+    """
+
+    # ── Law numbers ──────────────────────────────────────────────────────────
+
+    def test_n1577_law_number(self):
+        pages = [_make_page("Ν. 1577/1985 ΓΟΚ")]
+        meta = extract_metadata(pages, "N1577-1985-Old-GOK-Codified.pdf", "public")
+        assert meta.law_number == "Ν. 1577/1985"
+
+    def test_n2971_law_number(self):
+        pages = [_make_page("Ν. 2971/2001 Αιγιαλός")]
+        meta = extract_metadata(pages, "N2971-2001-Aigialos-Codified-202501.pdf", "public")
+        assert meta.law_number == "Ν. 2971/2001"
+
+    def test_n4067_law_number(self):
+        pages = [_make_page("Ν. 4067/2012 ΝΟΚ")]
+        meta = extract_metadata(pages, "N4067-2012-NOK-Codified-202512.pdf", "public")
+        assert meta.law_number == "Ν. 4067/2012"
+
+    def test_n4178_law_number(self):
+        # Body text has many cross-references — filename must win
+        body = "Ν. 998/1979 " * 8
+        pages = [_make_page(body)]
+        meta = extract_metadata(pages, "N4178-2013-Old-Authaireta-Codified-202512.pdf", "public")
+        assert meta.law_number == "Ν. 4178/2013"
+
+    def test_n4495_no_separator_law_number(self):
+        pages = [_make_page("Ν. 4495/2017")]
+        meta = extract_metadata(pages, "n44952017-demo.pdf", "public")
+        assert meta.law_number == "Ν. 4495/2017"
+
+    def test_n4858_law_number(self):
+        pages = [_make_page("Ν. 4858/2021")]
+        meta = extract_metadata(pages, "N4858-2021-Arxaiologikos-Codified-202601.pdf", "public")
+        assert meta.law_number == "Ν. 4858/2021"
+
+    def test_n998_law_number(self):
+        pages = [_make_page("Ν. 998/1979 Δασικός")]
+        meta = extract_metadata(pages, "N998-1979-Dasikos-Codified-202507.pdf", "public")
+        assert meta.law_number == "Ν. 998/1979"
+
+    def test_pd24_law_number(self):
+        # Body text may reference other laws — filename must win
+        body = "Ν. 3212/2003 " * 10
+        pages = [_make_page(body)]
+        meta = extract_metadata(pages, "PD-24-1985-Ektos-Sxediou.pdf", "public")
+        assert meta.law_number == "Π.Δ. 24/1985"
+
+    def test_pd41_law_number(self):
+        body = "Π.Δ. 71/1988 " * 10
+        pages = [_make_page(body)]
+        meta = extract_metadata(pages, "PD-41-2018-Pyroprostasia.pdf", "public")
+        assert meta.law_number == "Π.Δ. 41/2018"
+
+    # ── Source types ─────────────────────────────────────────────────────────
+
+    def test_n1577_source_type_is_law(self):
+        pages = [_make_page("Ν. 1577/1985")]
+        meta = extract_metadata(pages, "N1577-1985-Old-GOK-Codified.pdf", "public")
+        assert meta.source_type == "law"
+
+    def test_n2971_source_type_is_law(self):
+        pages = [_make_page("Ν. 2971/2001")]
+        meta = extract_metadata(pages, "N2971-2001-Aigialos-Codified-202501.pdf", "public")
+        assert meta.source_type == "law"
+
+    def test_n4067_source_type_is_law(self):
+        pages = [_make_page("Ν. 4067/2012")]
+        meta = extract_metadata(pages, "N4067-2012-NOK-Codified-202512.pdf", "public")
+        assert meta.source_type == "law"
+
+    def test_n4178_source_type_is_law(self):
+        pages = [_make_page("Ν. 4178/2013")]
+        meta = extract_metadata(pages, "N4178-2013-Old-Authaireta-Codified-202512.pdf", "public")
+        assert meta.source_type == "law"
+
+    def test_n4495_source_type_is_law(self):
+        pages = [_make_page("Ν. 4495/2017")]
+        meta = extract_metadata(pages, "n44952017-demo.pdf", "public")
+        assert meta.source_type == "law"
+
+    def test_n4858_source_type_is_law(self):
+        pages = [_make_page("Ν. 4858/2021")]
+        meta = extract_metadata(pages, "N4858-2021-Arxaiologikos-Codified-202601.pdf", "public")
+        assert meta.source_type == "law"
+
+    def test_n998_source_type_is_law(self):
+        pages = [_make_page("Ν. 998/1979")]
+        meta = extract_metadata(pages, "N998-1979-Dasikos-Codified-202507.pdf", "public")
+        assert meta.source_type == "law"
+
+    def test_pd24_source_type_is_presidential_decree(self):
+        # Must NOT be classified as court_decision even if body has ΣτΕ references
+        pages = [_make_page("ΣτΕ 100/2000 αναφέρεται")]
+        meta = extract_metadata(pages, "PD-24-1985-Ektos-Sxediou.pdf", "public")
+        assert meta.source_type == "presidential_decree"
+
+    def test_pd41_source_type_is_presidential_decree(self):
+        pages = [_make_page("ΣτΕ 1234/2000 αναφέρεται")]
+        meta = extract_metadata(pages, "PD-41-2018-Pyroprostasia.pdf", "public")
+        assert meta.source_type == "presidential_decree"
+
+    def test_egkyklios_source_type_is_circular(self):
+        pages = [_make_page("Εγκύκλιος")]
+        meta = extract_metadata(pages, "Egkyklios_4495_2017.pdf", "public")
+        assert meta.source_type == "circular"
