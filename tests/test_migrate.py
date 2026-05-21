@@ -44,6 +44,141 @@ class TestArgParsing:
         args = migrate.parser_args([])
         assert args.force is False
 
+    def test_resume_flag(self, migrate):
+        args = migrate.parser_args(["--resume"])
+        assert args.resume is True
+
+    def test_no_resume_by_default(self, migrate):
+        args = migrate.parser_args([])
+        assert args.resume is False
+
+
+# ---------- batch size + timeout config ----------
+
+class TestConfig:
+    def test_upsert_batch_is_fifty(self, migrate):
+        assert migrate._UPSERT_BATCH == 50
+
+    def test_cloud_timeout_is_at_least_60s(self, migrate):
+        assert migrate._CLOUD_TIMEOUT_SEC >= 60
+
+    def test_target_client_uses_increased_timeout(self, migrate):
+        """_make_target_client must pass timeout=_CLOUD_TIMEOUT_SEC to QdrantClient."""
+        from unittest.mock import patch as _patch
+        with _patch.object(migrate, "QdrantClient") as mock_qc:
+            migrate._make_target_client("https://example.qdrant.io", "key")
+        mock_qc.assert_called_once()
+        kwargs = mock_qc.call_args.kwargs
+        assert kwargs.get("timeout") == migrate._CLOUD_TIMEOUT_SEC
+
+    def test_max_attempts_is_five(self, migrate):
+        assert migrate._UPSERT_MAX_ATTEMPTS == 5
+
+
+# ---------- upsert retry logic ----------
+
+class TestUpsertRetry:
+    def test_succeeds_first_attempt(self, migrate):
+        from unittest.mock import MagicMock
+        target = MagicMock()
+        target.upsert.return_value = None
+        migrate._upsert_with_retry(
+            target, "col", points=[], batch_label="points 0-9", sleep_fn=lambda _: None,
+        )
+        assert target.upsert.call_count == 1
+
+    def test_retries_on_read_timeout_then_succeeds(self, migrate):
+        from unittest.mock import MagicMock
+
+        import httpx
+        target = MagicMock()
+        # First call raises, second succeeds
+        target.upsert.side_effect = [
+            httpx.ReadTimeout("read timeout"),
+            None,
+        ]
+        sleeps = []
+        migrate._upsert_with_retry(
+            target, "col", points=[], batch_label="points 0-49",
+            sleep_fn=lambda s: sleeps.append(s),
+        )
+        assert target.upsert.call_count == 2
+        assert sleeps == [2.0]  # first backoff = 2 s
+
+    def test_retries_multiple_times_then_succeeds(self, migrate):
+        from unittest.mock import MagicMock
+
+        import httpx
+        target = MagicMock()
+        target.upsert.side_effect = [
+            httpx.ReadTimeout("timeout 1"),
+            httpx.ConnectError("connect err"),
+            httpx.ReadTimeout("timeout 2"),
+            None,
+        ]
+        sleeps = []
+        migrate._upsert_with_retry(
+            target, "col", points=[], batch_label="points 0-49",
+            sleep_fn=lambda s: sleeps.append(s),
+        )
+        assert target.upsert.call_count == 4
+        # Backoff: 2, 4, 8
+        assert sleeps == [2.0, 4.0, 8.0]
+
+    def test_raises_after_max_attempts(self, migrate):
+        from unittest.mock import MagicMock
+
+        import httpx
+        target = MagicMock()
+        target.upsert.side_effect = httpx.ReadTimeout("persistent timeout")
+        with pytest.raises(httpx.ReadTimeout):
+            migrate._upsert_with_retry(
+                target, "col", points=[], batch_label="points 0-49",
+                sleep_fn=lambda _: None,
+            )
+        assert target.upsert.call_count == migrate._UPSERT_MAX_ATTEMPTS
+
+    def test_non_retryable_exception_propagates_immediately(self, migrate):
+        from unittest.mock import MagicMock
+        target = MagicMock()
+        target.upsert.side_effect = ValueError("schema error")
+        with pytest.raises(ValueError):
+            migrate._upsert_with_retry(
+                target, "col", points=[], batch_label="points 0-49",
+                sleep_fn=lambda _: None,
+            )
+        # No retries — failed immediately on first attempt
+        assert target.upsert.call_count == 1
+
+    def test_backoff_sequence_is_2_4_8_16_32(self, migrate):
+        from unittest.mock import MagicMock
+
+        import httpx
+        target = MagicMock()
+        # All 5 attempts fail → records 4 backoff sleeps
+        target.upsert.side_effect = httpx.ReadTimeout("nope")
+        sleeps = []
+        with pytest.raises(httpx.ReadTimeout):
+            migrate._upsert_with_retry(
+                target, "col", points=[], batch_label="points 0-49",
+                sleep_fn=lambda s: sleeps.append(s),
+            )
+        assert sleeps == [2.0, 4.0, 8.0, 16.0]
+
+    def test_resumes_after_retry_qdrant_response_exception(self, migrate):
+        """ResponseHandlingException from qdrant-client transport is retryable."""
+        from unittest.mock import MagicMock
+        target = MagicMock()
+        target.upsert.side_effect = [
+            migrate.ResponseHandlingException("transport error"),
+            None,
+        ]
+        migrate._upsert_with_retry(
+            target, "col", points=[], batch_label="points 0-49",
+            sleep_fn=lambda _: None,
+        )
+        assert target.upsert.call_count == 2
+
 
 # ---------- in-memory integration ----------
 

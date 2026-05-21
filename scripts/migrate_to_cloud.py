@@ -1,17 +1,24 @@
 """Copy a local Qdrant collection to a cloud Qdrant cluster.
 
 Usage:
-    uv run python scripts/migrate_to_cloud.py [--force] [--collection NAME]
+    uv run python scripts/migrate_to_cloud.py [--force] [--resume] [--collection NAME]
 
 Reads QDRANT_CLOUD_URL and QDRANT_CLOUD_API_KEY from .env or environment.
 Source is the local Qdrant instance from settings.qdrant_url (read-only).
+
+Flags:
+    --force   Delete the existing target collection and recreate from scratch.
+    --resume  Keep the existing target collection; upsert is idempotent on same IDs,
+              so this safely continues a previously-failed migration without re-deleting.
 """
 import argparse
+import logging
 import os
 import random
 import sys
 import time
 
+import httpx
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -23,10 +30,43 @@ from qdrant_client.models import (
 )
 from tqdm import tqdm
 
+# Qdrant transport-level exception. Import path is stable since qdrant-client 1.x.
+try:
+    from qdrant_client.http.exceptions import ResponseHandlingException
+except ImportError:  # defensive — older / future versions
+    class ResponseHandlingException(Exception):  # type: ignore[no-redef]
+        pass
+
 load_dotenv()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("migrate")
 
 _DEFAULT_COLLECTION = "domiki_public"
-_SCROLL_BATCH = 100
+# Scroll size — pull this many points at a time from the source.
+_SCROLL_BATCH = 50
+# Upsert batch size — push this many points per request to the target.
+# Smaller than scroll batch reduces single-request payload size, which matters on
+# the Qdrant Cloud free tier where shared infra causes intermittent ReadTimeout.
+_UPSERT_BATCH = 50
+# Per-request timeout (seconds) for the cloud target client.  Free-tier clusters
+# can take well over the default ~5s to ack large upserts under load.
+_CLOUD_TIMEOUT_SEC = 120
+# Retry policy for transient upsert errors (ReadTimeout / ConnectError /
+# ResponseHandlingException).  Backoff: 2, 4, 8, 16, 32 seconds.
+_UPSERT_MAX_ATTEMPTS = 5
+_UPSERT_BACKOFF_BASE_SEC = 2.0
+
+# Exceptions worth retrying — transient network/server hiccups, NOT 4xx schema errors.
+_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.ReadTimeout,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    ResponseHandlingException,
+)
 
 
 def parser_args(argv: list[str] | None = None):
@@ -40,7 +80,15 @@ def parser_args(argv: list[str] | None = None):
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite non-empty target collection (use with caution)",
+        help="Delete the target collection and recreate from scratch (use with caution)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Keep the existing target collection and continue upserting. "
+            "Upserts are idempotent on same IDs, so safe after a partial failure."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -52,8 +100,14 @@ def _make_source_client() -> QdrantClient:
     return QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
 
 
-def _make_target_client(url: str, api_key: str) -> QdrantClient:
-    return QdrantClient(url=url, api_key=api_key)
+def _make_target_client(url: str, api_key: str, timeout: int = _CLOUD_TIMEOUT_SEC) -> QdrantClient:
+    """Build the cloud QdrantClient with a generous per-request timeout.
+
+    The default httpx timeout (~5 s) is too short for Qdrant Cloud free tier,
+    which is on shared infrastructure and can take 30-60+ seconds to ack an
+    upsert when the cluster is under load.
+    """
+    return QdrantClient(url=url, api_key=api_key, timeout=timeout)
 
 
 def _check_reachable(client: QdrantClient, label: str) -> None:
@@ -126,12 +180,92 @@ def _recreate_collection(
 
 # ---------- migration ----------
 
+def _upsert_with_retry(
+    target: QdrantClient,
+    collection: str,
+    points: list[PointStruct],
+    batch_label: str,
+    max_attempts: int = _UPSERT_MAX_ATTEMPTS,
+    backoff_base: float = _UPSERT_BACKOFF_BASE_SEC,
+    sleep_fn=time.sleep,
+) -> None:
+    """Upsert one batch of points, retrying on transient transport errors.
+
+    Backoff: 2 s, 4 s, 8 s, 16 s, 32 s.  Raises the last exception on final failure.
+
+    Args:
+        target:        Qdrant client to write to.
+        collection:    Target collection name.
+        points:        Points to upsert.
+        batch_label:   Range string for logs, e.g. "points 50-99".
+        max_attempts:  Total attempts including the first.  Default 5.
+        backoff_base:  Initial delay in seconds; doubles each retry.
+        sleep_fn:      Indirection for tests so they don't actually sleep.
+    """
+    delay = backoff_base
+    for attempt in range(1, max_attempts + 1):
+        try:
+            target.upsert(collection_name=collection, points=points)
+            if attempt > 1:
+                logger.info(
+                    "Upsert succeeded on attempt %d/%d (%s)", attempt, max_attempts, batch_label
+                )
+            return
+        except _RETRYABLE_EXCEPTIONS as exc:
+            if attempt == max_attempts:
+                logger.error(
+                    "Upsert failed after %d attempts (%s): %s: %s",
+                    max_attempts,
+                    batch_label,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise
+            logger.warning(
+                "Upsert error (%s, %s): %s — retry %d/%d in %.0fs",
+                batch_label,
+                type(exc).__name__,
+                exc,
+                attempt,
+                max_attempts - 1,
+                delay,
+            )
+            sleep_fn(delay)
+            delay *= 2
+
+
+def _records_to_points(records) -> list[PointStruct]:
+    """Convert source scroll records to PointStructs."""
+    points: list[PointStruct] = []
+    for rec in records:
+        vec = rec.vector
+        dense = vec["dense"]
+        sv = vec["sparse"]
+        points.append(
+            PointStruct(
+                id=rec.id,
+                payload=rec.payload,
+                vector={
+                    "dense": dense,
+                    "sparse": SparseVector(indices=sv.indices, values=sv.values),
+                },
+            )
+        )
+    return points
+
+
 def _migrate(
     source: QdrantClient,
     target: QdrantClient,
     collection: str,
     total: int,
+    upsert_batch: int = _UPSERT_BATCH,
 ) -> int:
+    """Stream points from source to target.
+
+    Scroll in `_SCROLL_BATCH`-sized pages from source; subdivide each page into
+    `upsert_batch`-sized requests to the target with retry on transient errors.
+    """
     migrated = 0
     offset = None
 
@@ -147,28 +281,21 @@ def _migrate(
             if not records:
                 break
 
-            points: list[PointStruct] = []
-            for rec in records:
-                vec = rec.vector
-                dense = vec["dense"]
-                sv = vec["sparse"]
-                points.append(
-                    PointStruct(
-                        id=rec.id,
-                        payload=rec.payload,
-                        vector={
-                            "dense": dense,
-                            "sparse": SparseVector(
-                                indices=sv.indices,
-                                values=sv.values,
-                            ),
-                        },
-                    )
-                )
+            points = _records_to_points(records)
 
-            target.upsert(collection_name=collection, points=points)
-            migrated += len(points)
-            bar.update(len(points))
+            # Split the scroll page into smaller upsert batches.
+            for sub_start in range(0, len(points), upsert_batch):
+                sub_points = points[sub_start : sub_start + upsert_batch]
+                first = migrated
+                last = migrated + len(sub_points) - 1
+                _upsert_with_retry(
+                    target,
+                    collection,
+                    sub_points,
+                    batch_label=f"points {first}-{last}",
+                )
+                migrated += len(sub_points)
+                bar.update(len(sub_points))
 
             if next_offset is None:
                 break
@@ -274,12 +401,24 @@ def main() -> None:
         sys.exit(1)
     print(f"  Source collection '{collection}': {src_count} points. ✓")
 
-    if _collection_exists(target, collection):
+    if args.force and args.resume:
+        print("ERROR: --force and --resume are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+
+    target_exists = _collection_exists(target, collection)
+
+    if target_exists and args.resume:
+        tgt_count = _point_count(target, collection)
+        print(
+            f"  RESUME mode: keeping existing target collection "
+            f"({tgt_count} points). Upserts overwrite same-ID points idempotently."
+        )
+    elif target_exists:
         tgt_count = _point_count(target, collection)
         if tgt_count > 0 and not args.force:
             print(
                 f"ERROR: Target collection '{collection}' already has {tgt_count} points.\n"
-                "       Pass --force to overwrite.",
+                "       Pass --force to overwrite, or --resume to continue idempotently.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -289,8 +428,11 @@ def main() -> None:
         print(f"  Deleted existing target collection '{collection}'.")
 
     # --- Replicate collection config ---
-    print("\n[2/5] Replicating collection config...")
-    _recreate_collection(source, target, collection)
+    if target_exists and args.resume:
+        print("\n[2/5] Skipping collection creation (resume mode).")
+    else:
+        print("\n[2/5] Replicating collection config...")
+        _recreate_collection(source, target, collection)
 
     # --- Stream points ---
     print(f"\n[3/5] Streaming {src_count} points in batches of {_SCROLL_BATCH}...")
