@@ -381,16 +381,23 @@ def main() -> None:
         if st.session_state.get("pending_query"):
             st.rerun()
 
-    query = st.text_area(
-        "Ερώτηση",
-        placeholder="π.χ. Μπορώ να χτίσω πισίνα σε εκτός σχεδίου ακίνητο 2 στρ. με Σ.Δ. 0.4;",
-        height=100,
-        key="query_input",
-    )
-    submitted = st.button("Υποβολή", type="primary", disabled=not query.strip())
-    if submitted and query.strip():
-        st.session_state.pending_query = query.strip()
-        st.rerun()
+    # Wrap in st.form so the submit button is available while typing
+    # (no Ctrl+Enter needed, always enabled).
+    with st.form("query_form", clear_on_submit=True):
+        query = st.text_area(
+            "Ερώτηση",
+            placeholder="π.χ. Μπορώ να χτίσω πισίνα σε εκτός σχεδίου ακίνητο 2 στρ. με Σ.Δ. 0.4;",
+            height=100,
+        )
+        submitted = st.form_submit_button("Υποβολή", type="primary")
+
+    if submitted:
+        q = query.strip()
+        if not q:
+            st.info("Γράψε μια ερώτηση πρώτα.")
+        else:
+            st.session_state.pending_query = q
+            st.rerun()
 
 
 main()
