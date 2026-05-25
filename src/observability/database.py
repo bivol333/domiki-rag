@@ -7,6 +7,7 @@ Supports two backends:
 Factory `get_log_db()` selects the backend automatically:
   - If called with an explicit db_path  → SQLite at that path (tests)
   - If TURSO_DATABASE_URL env var is set → Turso (Streamlit Cloud)
+  - If TURSO_DATABASE_URL in st.secrets  → Turso (Streamlit Cloud secrets fallback)
   - Otherwise                            → SQLite at data/logs.db (local dev)
 """
 import json
@@ -174,8 +175,16 @@ class _TursoLogDb(LogDb):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+        except Exception as exc:
+            logger.error(
+                "Turso HTTP request failed (url=%s): %s",
+                self._pipeline_url,
+                exc,
+            )
+            raise
         return data.get("results", [])
 
     def execute(self, sql: str, params: tuple = ()) -> _Cursor:
@@ -230,23 +239,47 @@ class _TursoLogDb(LogDb):
 # Public factory
 # ---------------------------------------------------------------------------
 
+def _get_st_secret(key: str) -> str:
+    """Read a secret from st.secrets. Returns '' on any failure (no Streamlit context, key absent, etc.)."""
+    try:
+        import streamlit as st  # noqa: PLC0415
+        val = st.secrets.get(key, "")  # type: ignore[attr-defined]
+        return (val or "").strip()
+    except Exception:
+        return ""
+
+
 def get_log_db(db_path: Path | None = None) -> LogDb:
     """Return the appropriate LogDb backend.
 
     Selection order:
-      1. Explicit db_path  → _SqliteLogDb at that path (tests / local scripts)
-      2. TURSO_DATABASE_URL set → _TursoLogDb (Streamlit Cloud production)
-      3. Fallback → _SqliteLogDb at DEFAULT_DB_PATH (local dev, no cloud creds)
+      1. Explicit db_path          → _SqliteLogDb at that path (tests / local scripts)
+      2. TURSO_DATABASE_URL in env → _TursoLogDb (Streamlit Cloud production)
+      3. TURSO_DATABASE_URL in st.secrets → _TursoLogDb (Streamlit Cloud secrets fallback)
+      4. Fallback                  → _SqliteLogDb at DEFAULT_DB_PATH (local dev, no cloud creds)
     """
     if db_path is not None:
         return _SqliteLogDb(Path(db_path))
 
     turso_url = os.environ.get("TURSO_DATABASE_URL", "").strip()
     turso_token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+
+    # Streamlit Cloud may not reliably inject secrets into os.environ — fall back to st.secrets.
+    if not turso_url:
+        turso_url = _get_st_secret("TURSO_DATABASE_URL")
+    if not turso_token:
+        turso_token = _get_st_secret("TURSO_AUTH_TOKEN")
+
     if turso_url:
-        logger.info("Using Turso backend at %s", turso_url.split("@")[-1] if "@" in turso_url else turso_url)
+        # Normalize now so the logged URL matches what we actually connect to.
+        https_url = turso_url.replace("libsql://", "https://").rstrip("/")
+        logger.info("Using Turso backend: %s", https_url)
         return _TursoLogDb(turso_url, turso_token)
 
+    logger.info(
+        "Using local SQLite fallback (no TURSO_DATABASE_URL found): %s",
+        DEFAULT_DB_PATH,
+    )
     return _SqliteLogDb(DEFAULT_DB_PATH)
 
 

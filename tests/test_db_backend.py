@@ -2,6 +2,7 @@
 
 Covers:
   - Factory selects the right backend based on env vars / explicit path
+  - Factory falls back to st.secrets when env vars are absent
   - _SqliteLogDb: schema init, insert, select, update, rowcount, lastrowid
   - _turso_arg / _turso_val type conversion helpers
   - _TursoLogDb is returned when TURSO_DATABASE_URL is set (no network needed)
@@ -10,6 +11,7 @@ import os
 
 import pytest
 
+import src.observability.database as db_module
 from src.observability.database import (
     DEFAULT_DB_PATH,
     LogDb,
@@ -50,6 +52,34 @@ def test_get_log_db_with_turso_url_returns_turso(monkeypatch):
     db = get_log_db()
     # Don't close — no network connection is opened until a request is made
     assert isinstance(db, _TursoLogDb)
+
+
+def test_get_log_db_falls_back_to_st_secrets(monkeypatch):
+    """When TURSO_DATABASE_URL is absent from env but present in st.secrets, use Turso."""
+    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    monkeypatch.delenv("TURSO_AUTH_TOKEN", raising=False)
+
+    _secrets = {
+        "TURSO_DATABASE_URL": "libsql://test-db-org.turso.io",
+        "TURSO_AUTH_TOKEN": "secret-token",
+    }
+    monkeypatch.setattr(db_module, "_get_st_secret", lambda key: _secrets.get(key, ""))
+
+    db = get_log_db()
+    assert isinstance(db, _TursoLogDb)
+
+
+def test_get_log_db_st_secrets_empty_returns_sqlite(monkeypatch):
+    """When both env and st.secrets have no Turso URL, fall back to SQLite."""
+    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    monkeypatch.delenv("TURSO_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(db_module, "_get_st_secret", lambda key: "")
+
+    db = get_log_db()
+    try:
+        assert isinstance(db, _SqliteLogDb)
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
