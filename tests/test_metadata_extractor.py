@@ -1,7 +1,11 @@
 """Tests for metadata_extractor."""
 from datetime import date
 
-from src.ingestion.metadata_extractor import _law_ref_from_filename, extract_metadata
+from src.ingestion.metadata_extractor import (
+    _law_ref_from_filename,
+    _law_ref_from_ya_kya_filename,
+    extract_metadata,
+)
 from src.ingestion.pdf_parser import PageContent
 
 
@@ -306,3 +310,49 @@ class TestOnDiskFilenames:
         pages = [_make_page("Εγκύκλιος")]
         meta = extract_metadata(pages, "Egkyklios_4495_2017.pdf", "public")
         assert meta.source_type == "circular"
+
+
+class TestYAKYAMetadata:
+    """YA / KYA files must never inherit a referenced law's number (Phase 4d v7)."""
+
+    def test_ya_law_number_not_cross_reference(self):
+        """The body repeatedly mentions Ν. 4495/2017 — must NOT become the law_number."""
+        body = "Σε εφαρμογή του Ν. 4495/2017 περί δόμησης. " * 10
+        pages = [_make_page(body)]
+        meta = extract_metadata(pages, "YA-Ktiriodomikos-2023.pdf", "public")
+        assert meta.law_number != "Ν. 4495/2017"
+
+    def test_ya_law_number_derived_from_filename(self):
+        """law_number for YA file contains the filename descriptive tokens."""
+        pages = [_make_page("")]
+        meta = extract_metadata(pages, "YA-Ktiriodomikos-2023.pdf", "public")
+        assert meta.law_number is not None
+        assert "2023" in meta.law_number
+
+    def test_ya_source_type_is_ministerial_decision(self):
+        """YA filename prefix → source_type ministerial_decision from filename rule."""
+        pages = [_make_page("")]
+        meta = extract_metadata(pages, "YA-Ktiriodomikos-2023.pdf", "public")
+        assert meta.source_type == "ministerial_decision"
+
+    def test_kya_law_number_not_cross_reference(self):
+        body = "Ν. 4495/2017 " * 5
+        pages = [_make_page(body)]
+        meta = extract_metadata(pages, "KYA-SomeLaw-2020.pdf", "public")
+        assert meta.law_number != "Ν. 4495/2017"
+
+    def test_kya_source_type_is_ministerial_decision(self):
+        pages = [_make_page("")]
+        meta = extract_metadata(pages, "KYA-SomeLaw-2020.pdf", "public")
+        assert meta.source_type == "ministerial_decision"
+
+    def test_law_ref_from_ya_kya_filename_ya(self):
+        result = _law_ref_from_ya_kya_filename("YA-Ktiriodomikos-2023.pdf")
+        assert result == "ΥΑ Ktiriodomikos 2023"
+
+    def test_law_ref_from_ya_kya_filename_kya(self):
+        result = _law_ref_from_ya_kya_filename("KYA-Diagonismos-2021.pdf")
+        assert result == "ΚΥΑ Diagonismos 2021"
+
+    def test_law_ref_from_ya_kya_filename_non_ya_returns_none(self):
+        assert _law_ref_from_ya_kya_filename("N4495-2017-Something.pdf") is None

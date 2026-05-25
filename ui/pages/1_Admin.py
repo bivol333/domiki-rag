@@ -37,8 +37,12 @@ def _password_gate() -> bool:
         return True
 
     st.subheader("Πρόσβαση Admin")
-    entered = st.text_input("Admin password", type="password")
-    if st.button("Είσοδος", type="primary"):
+    # Use st.form to ensure the submit button is always rendered with the input,
+    # avoiding state loss from Enter-key reruns.
+    with st.form("admin_password_form"):
+        entered = st.text_input("Admin password", type="password")
+        submitted = st.form_submit_button("Είσοδος", type="primary")
+    if submitted:
         if entered == expected:
             st.session_state.admin_authed = True
             st.rerun()

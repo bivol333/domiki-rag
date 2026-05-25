@@ -55,3 +55,4 @@ logs/
 # Private working documents (contain real credential examples)
 docs/phase4c-cleanup-prompt.md
 .claude/ 
+.streamlit/secrets.toml 

@@ -15,6 +15,8 @@ def _install_streamlit_mock(session_state: dict | None = None) -> MagicMock:
     st_mock = MagicMock()
     st_mock.session_state = _State(session_state or {})
     st_mock.button.return_value = False
+    # Login forms now use st.form + st.form_submit_button instead of st.button
+    st_mock.form_submit_button.return_value = False
     st_mock.text_input.return_value = ""
     st_mock.cache_resource = lambda f: f
     secrets_mock = MagicMock()
@@ -91,9 +93,9 @@ class TestSiteGateAuthenticated:
         st.text_input.assert_not_called()
 
     def test_correct_password_sets_flag(self, monkeypatch):
-        # Keep button=False during module load so check_site_password() doesn't
-        # auto-authenticate and set site_authenticated before our explicit call.
-        st = _install_streamlit_mock()  # button.return_value = False by default
+        # Keep form_submit_button=False during module load so check_site_password()
+        # doesn't auto-authenticate before our explicit call.
+        st = _install_streamlit_mock()  # form_submit_button.return_value = False by default
         st.secrets.get = MagicMock(return_value=None)
         monkeypatch.setenv("SITE_PASSWORD", "secret")
 
@@ -101,7 +103,7 @@ class TestSiteGateAuthenticated:
         st.reset_mock()
         st.secrets.get = MagicMock(return_value=None)
         st.text_input.return_value = "secret"
-        st.button.return_value = True
+        st.form_submit_button.return_value = True
 
         mod.check_site_password()
 
@@ -113,12 +115,12 @@ class TestSiteGateAuthenticated:
         st.secrets.get = MagicMock(return_value=None)
         monkeypatch.setenv("SITE_PASSWORD", "secret")
         st.text_input.return_value = "wrong"
-        st.button.return_value = True
+        st.form_submit_button.return_value = True
 
         mod = _load_app_module()
         st.reset_mock()
         st.text_input.return_value = "wrong"
-        st.button.return_value = True
+        st.form_submit_button.return_value = True
 
         result = mod.check_site_password()
 
@@ -131,12 +133,12 @@ class TestSiteGateAuthenticated:
         st.secrets.get = MagicMock(return_value=None)
         monkeypatch.setenv("SITE_PASSWORD", "secret")
         st.text_input.return_value = ""
-        st.button.return_value = True
+        st.form_submit_button.return_value = True
 
         mod = _load_app_module()
         st.reset_mock()
         st.text_input.return_value = ""
-        st.button.return_value = True
+        st.form_submit_button.return_value = True
 
         result = mod.check_site_password()
 
@@ -155,7 +157,7 @@ class TestSiteGateAuthenticated:
 
         assert result is False
         st.text_input.assert_called_once()
-        st.button.assert_called_once()
+        st.form_submit_button.assert_called_once()
 
     def test_site_password_from_secrets_takes_precedence(self, monkeypatch):
         # Keep button=False during module load to prevent auto-authentication.
@@ -167,7 +169,7 @@ class TestSiteGateAuthenticated:
         st.reset_mock()
         st.secrets.get = MagicMock(return_value="from_secrets")
         st.text_input.return_value = "from_secrets"
-        st.button.return_value = True
+        st.form_submit_button.return_value = True
 
         mod.check_site_password()
 

@@ -1,0 +1,23 @@
+======================================================================
+DOWNLOAD REPORT -- e-nomothesia.gr law PDFs
+======================================================================
+
+SUCCEEDED (OK): 5
+  [OK] N4412-2016-DimosiesSymvaseis.pdf  (3,109 chars)  -- Δημόσιες συμβάσεις έργων
+  [OK] N1337-1983-Eisfores.pdf  (3,993 chars)  -- Εισφορές/πράξεις εφαρμογής
+  [OK] N3852-2010-Kallikratis.pdf  (2,887 chars)  -- Καλλικράτης αρμοδιότητες ΟΤΑ
+  [OK] N960-1979-Stathmefsi.pdf  (6,325 chars)  -- Χώροι στάθμευσης (ίσως πολυτονικό - έλεγξε)
+  [OK] N4070-2012-Keraies.pdf  (3,118 chars)  -- Ηλεκτρονικές επικοινωνίες/κεραίες
+
+NEEDS MANUAL CHECK (LOW_TEXT / EMPTY): 0
+
+FAILED (HTTP error / timeout): 0
+
+TODO (manual OCR -- not downloaded): 0
+
+RESOLVED VIA SEARCH (update manifest with these URLs): 1
+  [OK] N4412-2016-DimosiesSymvaseis.pdf
+      https://www.e-nomothesia.gr/kat-demosia-erga/nomos-4412-2016.html
+
+SUMMARY: 5 OK  |  0 LOW/EMPTY  |  0 FAILED  |  0 TODO  |  1 resolved-via-search
+======================================================================

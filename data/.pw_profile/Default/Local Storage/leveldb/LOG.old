@@ -1,0 +1,7 @@
+2026/05/25-04:11:06.054 592c Reusing MANIFEST C:\Users\Skakistis\dev\domiki-rag\data\.pw_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/05/25-04:11:06.060 592c Recovering log #20
+2026/05/25-04:11:06.060 592c Level-0 table #23: started
+2026/05/25-04:11:06.067 592c Level-0 table #23: 13019 bytes OK
+2026/05/25-04:11:06.067 592c Recovering log #22
+2026/05/25-04:11:06.067 592c Reusing old log C:\Users\Skakistis\dev\domiki-rag\data\.pw_profile\Default\Local Storage\leveldb/000022.log 
+2026/05/25-04:11:06.068 592c Delete type=0 #20

@@ -303,14 +303,17 @@ def check_site_password() -> bool:
 
     st.title("Domiki RAG")
     st.markdown("Εισάγετε τον κωδικό πρόσβασης για να συνεχίσετε.")
-    password = st.text_input(
-        "Κωδικός",
-        type="password",
-        key="site_password_input",
-        label_visibility="collapsed",
-        placeholder="Κωδικός πρόσβασης",
-    )
-    if st.button("Είσοδος", type="primary"):
+    # Use st.form so the submit button is always rendered alongside the input,
+    # regardless of CookieManager reruns or Enter-key-triggered reruns.
+    with st.form("site_password_form"):
+        password = st.text_input(
+            "Κωδικός",
+            type="password",
+            label_visibility="collapsed",
+            placeholder="Κωδικός πρόσβασης",
+        )
+        submitted = st.form_submit_button("Είσοδος", type="primary")
+    if submitted:
         if password == expected:
             st.session_state["site_authenticated"] = True
             st.rerun()

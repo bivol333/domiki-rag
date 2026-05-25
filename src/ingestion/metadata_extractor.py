@@ -2,6 +2,7 @@
 import logging
 import re
 import unicodedata
+from pathlib import Path
 from datetime import date
 
 from src.ingestion.models import DocumentMetadata, Scope, SourceType
@@ -48,6 +49,8 @@ _FILENAME_TYPE_RULES: list[tuple[re.Pattern, SourceType]] = [
     (re.compile(r"^(?:ΠΔ|PD)[-_]", re.IGNORECASE), "presidential_decree"),
     (re.compile(r"^(?:Ν|N)[-_]?\d|^law[-_]", re.IGNORECASE), "law"),
     (re.compile(r"egkykl|egkyf", re.IGNORECASE), "circular"),
+    # YA / KYA filenames → ministerial_decision (must appear after PD/N rules)
+    (re.compile(r"^(?:YA|KYA)[-_]", re.IGNORECASE), "ministerial_decision"),
 ]
 
 _CONTENT_TYPE_RULES: list[tuple[re.Pattern, SourceType]] = [
@@ -103,6 +106,25 @@ def _law_ref_from_filename(filename: str) -> str | None:
     if m:
         return f"Ν. {m.group(1)}/{m.group(2)}"
     return None
+
+
+def _law_ref_from_ya_kya_filename(filename: str) -> str | None:
+    """Derive a descriptive label from a YA / KYA filename.
+
+    Used instead of body-text frequency analysis to prevent cross-references
+    to other laws from being mistaken for the document's own identity.
+
+    Examples:
+      YA-Ktiriodomikos-2023.pdf  → "ΥΑ Ktiriodomikos 2023"
+      KYA-Diagonismos-2021.pdf   → "ΚΥΑ Diagonismos 2021"
+    """
+    stem = Path(filename).stem  # e.g. "YA-Ktiriodomikos-2023"
+    m = re.match(r"^(YA|KYA)-(.+)", stem, re.IGNORECASE)
+    if not m:
+        return None
+    prefix = "ΥΑ" if m.group(1).upper() == "YA" else "ΚΥΑ"
+    label = m.group(2).replace("-", " ")  # "Ktiriodomikos-2023" → "Ktiriodomikos 2023"
+    return f"{prefix} {label}"
 
 
 def _infer_source_type(filename: str, head_text: str) -> SourceType:
@@ -201,7 +223,12 @@ def extract_metadata(
     # Law number: filename wins (prevents body cross-references from contaminating identity)
     law_number = _law_ref_from_filename(source_file)
     if law_number is None:
-        law_number = _primary_law_ref(pages)
+        if re.match(r"^(?:YA|KYA)[-_]", source_file, re.IGNORECASE):
+            # YA/KYA: never scan body — would grab cross-references to other laws.
+            # Derive a descriptive label from the filename instead.
+            law_number = _law_ref_from_ya_kya_filename(source_file)
+        else:
+            law_number = _primary_law_ref(pages)
 
     fek_refs = extract_fek_refs(head_text)
     fek_ref = fek_refs[0] if fek_refs else None

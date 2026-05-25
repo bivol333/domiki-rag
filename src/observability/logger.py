@@ -1,4 +1,4 @@
-"""QueryLogger: persist queries, answers, and feedback to SQLite."""
+"""QueryLogger: persist queries, answers, and feedback to the log database."""
 import json
 import logging
 from datetime import datetime
@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from src.generation.models import AnswerResponse
-from src.observability.database import DEFAULT_DB_PATH, get_connection, init_db
+from src.observability.database import LogDb, get_log_db, init_db
 from src.observability.models import QueryLogEntry
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def _chunks_metadata(response: AnswerResponse) -> list[dict]:
     return out
 
 
-def _row_to_entry(row) -> QueryLogEntry:
+def _row_to_entry(row: dict) -> QueryLogEntry:
     return QueryLogEntry(
         id=row["id"],
         timestamp=datetime.fromisoformat(row["timestamp"]),
@@ -45,35 +45,58 @@ def _row_to_entry(row) -> QueryLogEntry:
 
 
 class QueryLogger:
-    def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
-        self.db_path = Path(db_path)
-        if not self.db_path.exists():
-            init_db(self.db_path)
+    """Logs queries and feedback to the configured database backend.
+
+    Args:
+        db_path: If given, use a local SQLite file at this path (tests / scripts).
+                 If None (default), the backend is chosen by get_log_db():
+                 Turso when TURSO_DATABASE_URL is set, otherwise local SQLite.
+    """
+
+    def __init__(self, db_path: Path | None = None) -> None:
+        self._db_path = Path(db_path) if db_path is not None else None
+        # Ensure schema exists; errors here are non-fatal — log and continue.
+        try:
+            init_db(self._db_path)
+        except Exception as exc:
+            logger.error("Failed to initialize log DB schema: %s", exc)
+
+    def _db(self) -> LogDb:
+        """Open a fresh backend connection for one operation."""
+        return get_log_db(self._db_path)
 
     def log(self, session_id: str, query: str, response: AnswerResponse) -> int:
-        """Insert a new row. Returns the row id."""
+        """Insert a new row. Returns the row id.
+
+        Wrapped in try/except — a logging failure must never break the user flow.
+        Returns -1 on failure.
+        """
         timestamp = datetime.now().isoformat()
         chunks_json = json.dumps(_chunks_metadata(response), ensure_ascii=False)
-        conn = get_connection(self.db_path)
         try:
-            cursor = conn.execute(
-                """
-                INSERT INTO queries
-                    (timestamp, session_id, query, answer, chunks_used, refused)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    timestamp,
-                    session_id,
-                    query,
-                    response.answer_text,
-                    chunks_json,
-                    1 if response.refused else 0,
-                ),
-            )
-            query_id = cursor.lastrowid
-        finally:
-            conn.close()
+            db = self._db()
+            try:
+                cursor = db.execute(
+                    """
+                    INSERT INTO queries
+                        (timestamp, session_id, query, answer, chunks_used, refused)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        timestamp,
+                        session_id,
+                        query,
+                        response.answer_text,
+                        chunks_json,
+                        1 if response.refused else 0,
+                    ),
+                )
+                query_id = cursor.lastrowid or -1
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.error("Failed to log query (session=%s): %s", session_id[:12], exc)
+            return -1
         logger.info("Logged query id=%d session=%s", query_id, session_id[:12])
         return query_id
 
@@ -86,25 +109,25 @@ class QueryLogger:
         """Set feedback for a row. Overwrites existing feedback if present."""
         if feedback not in ("positive", "negative"):
             raise ValueError(f"feedback must be 'positive' or 'negative', got {feedback!r}")
-        conn = get_connection(self.db_path)
+        db = self._db()
         try:
-            cursor = conn.execute(
+            cursor = db.execute(
                 "UPDATE queries SET feedback=?, feedback_comment=? WHERE id=?",
                 (feedback, comment, query_id),
             )
             if cursor.rowcount == 0:
                 raise ValueError(f"No query with id={query_id}")
         finally:
-            conn.close()
+            db.close()
 
     def get_by_id(self, query_id: int) -> QueryLogEntry | None:
-        conn = get_connection(self.db_path)
+        db = self._db()
         try:
-            row = conn.execute(
+            row = db.execute(
                 "SELECT * FROM queries WHERE id=?", (query_id,),
             ).fetchone()
         finally:
-            conn.close()
+            db.close()
         return _row_to_entry(row) if row else None
 
     def get_session_history(
@@ -113,9 +136,9 @@ class QueryLogger:
         limit: int = 20,
     ) -> list[QueryLogEntry]:
         """Most recent first."""
-        conn = get_connection(self.db_path)
+        db = self._db()
         try:
-            rows = conn.execute(
+            rows = db.execute(
                 """
                 SELECT * FROM queries
                 WHERE session_id=?
@@ -125,7 +148,7 @@ class QueryLogger:
                 (session_id, limit),
             ).fetchall()
         finally:
-            conn.close()
+            db.close()
         return [_row_to_entry(r) for r in rows]
 
     def _build_filters(
@@ -166,11 +189,11 @@ class QueryLogger:
         """For admin view. feedback_filter: 'positive', 'negative', 'none', or None."""
         where, params = self._build_filters(refused_only, feedback_filter, date_from, date_to)
         sql = f"SELECT * FROM queries{where} ORDER BY id DESC LIMIT ? OFFSET ?"
-        conn = get_connection(self.db_path)
+        db = self._db()
         try:
-            rows = conn.execute(sql, (*params, limit, offset)).fetchall()
+            rows = db.execute(sql, (*params, limit, offset)).fetchall()
         finally:
-            conn.close()
+            db.close()
         return [_row_to_entry(r) for r in rows]
 
     def count_total(
@@ -182,9 +205,9 @@ class QueryLogger:
     ) -> int:
         where, params = self._build_filters(refused_only, feedback_filter, date_from, date_to)
         sql = f"SELECT COUNT(*) AS n FROM queries{where}"
-        conn = get_connection(self.db_path)
+        db = self._db()
         try:
-            row = conn.execute(sql, params).fetchone()
+            row = db.execute(sql, tuple(params)).fetchone()
         finally:
-            conn.close()
-        return int(row["n"])
+            db.close()
+        return int(row["n"]) if row else 0
