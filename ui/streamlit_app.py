@@ -95,14 +95,37 @@ def _ensure_session_id() -> str:
 
 # ---------- rendering ----------
 
-def _render_welcome(sample_clicked_key: str) -> None:
+def _set_pending_query(q: str) -> None:
+    """Set pending_query in session_state — used as a Streamlit callback.
+
+    Streamlit fires on_click callbacks BEFORE the next render starts, so this
+    guarantees pending_query is in session_state by the time the next script
+    run begins. The next render lands directly in the answering branch and
+    never re-renders the welcome block. Without callbacks (using inline
+    `if st.button(): st.rerun()`), the welcome briefly re-renders in the same
+    script run as the click, and those widgets carry into the visible state
+    during the subsequent blocking generation call.
+    """
+    q = (q or "").strip()
+    if q:
+        st.session_state.pending_query = q
+
+
+def _on_query_form_submit() -> None:
+    """Form-submit callback: read the text-area value via its key and stash it."""
+    _set_pending_query(st.session_state.get("query_input", ""))
+
+
+def _render_welcome() -> None:
     """Render the initial empty-state welcome with suggested questions.
 
     Caller is responsible for only invoking this in the truly initial state
     (no history, no pending query, not viewing a cached entry).  As a defensive
-    second line, we also bail out here if any of those flags are set — this
-    guarantees suggested-question buttons never appear alongside an answer
-    even under unusual rerun ordering.
+    second line, we also bail out here if either flag is set.
+
+    Sample buttons use on_click callbacks (not inline `if st.button(): st.rerun()`)
+    so the click sets pending_query BEFORE the next render — eliminating the
+    intermediate re-render of the welcome block.
     """
     if (
         st.session_state.get("pending_query")
@@ -116,9 +139,13 @@ def _render_welcome(sample_clicked_key: str) -> None:
         "νομοθεσίας. Πληκτρολογήστε ερώτηση ή δοκιμάστε ένα από τα παρακάτω."
     )
     for i, sample in enumerate(_SAMPLE_QUESTIONS):
-        if st.button(sample, key=f"sample_{i}", use_container_width=True):
-            st.session_state[sample_clicked_key] = sample
-            st.rerun()
+        st.button(
+            sample,
+            key=f"sample_{i}",
+            use_container_width=True,
+            on_click=_set_pending_query,
+            args=(sample,),
+        )
 
 
 def _render_feedback_widget(query_id: int, logger: QueryLogger) -> None:
@@ -415,29 +442,31 @@ def main() -> None:
         _run_query(pending, session_id=session_id, top_k=top_k)
         return
 
-    # show welcome if no history, else input form
+    # Welcome (intro + suggested questions) ONLY in the genuine empty state.
+    # Note: `pending` was already popped above — if it was truthy we returned.
+    # The actual gate that hides the welcome during the submit→answer cycle is
+    # the on_click callback wired up on the form-submit button and sample
+    # buttons: callbacks run BEFORE the next render, so by the time we get
+    # here on the rerun, `pending` is set and we've already returned.
     if not history:
-        _render_welcome("pending_query")
-        if st.session_state.get("pending_query"):
-            st.rerun()
+        _render_welcome()
 
     # Wrap in st.form so the submit button is available while typing
-    # (no Ctrl+Enter needed, always enabled).
+    # (no Ctrl+Enter needed, always enabled). The on_click callback sets
+    # pending_query in session_state before the rerun fires — see
+    # _on_query_form_submit for the rationale.
     with st.form("query_form", clear_on_submit=True):
-        query = st.text_area(
+        st.text_area(
             "Ερώτηση",
+            key="query_input",
             placeholder="π.χ. Μπορώ να χτίσω πισίνα σε εκτός σχεδίου ακίνητο 2 στρ. με Σ.Δ. 0.4;",
             height=100,
         )
-        submitted = st.form_submit_button("Υποβολή", type="primary")
-
-    if submitted:
-        q = query.strip()
-        if not q:
-            st.info("Γράψε μια ερώτηση πρώτα.")
-        else:
-            st.session_state.pending_query = q
-            st.rerun()
+        st.form_submit_button(
+            "Υποβολή",
+            type="primary",
+            on_click=_on_query_form_submit,
+        )
 
 
 main()
