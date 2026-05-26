@@ -28,9 +28,18 @@ _SAMPLE_QUESTIONS = [
 
 # ---------- resource bootstrapping ----------
 
-@st.cache_resource
 def _get_cookie_manager() -> stx.CookieManager:
-    return stx.CookieManager(key="domiki_cookies")
+    """Return a per-session CookieManager stored in st.session_state.
+
+    CookieManager renders a widget, so it must NOT be created inside a
+    @st.cache_resource / @st.cache_data function — Streamlit forbids widget
+    calls in cached contexts.  Storing it in session_state gives us a single
+    stable instance per browser session without triggering the cache-widget
+    error.
+    """
+    if "cookie_manager" not in st.session_state:
+        st.session_state.cookie_manager = stx.CookieManager(key="domiki_cookies")
+    return st.session_state.cookie_manager
 
 
 @st.cache_resource

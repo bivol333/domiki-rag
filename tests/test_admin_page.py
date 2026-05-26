@@ -15,6 +15,19 @@ class _State(dict):
         self[k] = v
 
 
+def _password_secrets_mock(value: str) -> MagicMock:
+    """Return a st.secrets.get mock that yields `value` only for ADMIN_PASSWORD.
+
+    Any other key (e.g. TURSO_DATABASE_URL) gets the caller-supplied default so
+    _get_st_secret() in database.py returns '' and SQLite is used — not a bogus
+    Turso URL built from the password string.
+    """
+    def _get(key, default=None):
+        return value if key == "ADMIN_PASSWORD" else default
+
+    return MagicMock(side_effect=_get)
+
+
 def _install_streamlit_mock(authed: bool = False) -> MagicMock:
     """Install a MagicMock for `streamlit` so the page can run top-level."""
     st_mock = MagicMock()
@@ -48,7 +61,7 @@ class TestPasswordResolution:
     def test_returns_secret_if_set(self, monkeypatch):
         _install_streamlit_mock()
         import streamlit as st
-        st.secrets.get = MagicMock(return_value="hunter2")
+        st.secrets.get = _password_secrets_mock("hunter2")
         monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
 
         mod = _load_admin_module()
@@ -66,7 +79,7 @@ class TestPasswordResolution:
     def test_returns_none_if_unset(self, monkeypatch):
         _install_streamlit_mock(authed=True)
         import streamlit as st
-        st.secrets.get = MagicMock(return_value="dummy")  # let main() pass the gate
+        st.secrets.get = _password_secrets_mock("dummy")  # let main() pass the gate
         monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
 
         mod = _load_admin_module()
@@ -91,7 +104,7 @@ class TestPasswordGate:
     def test_already_authed_passes_gate(self, monkeypatch):
         _install_streamlit_mock(authed=True)
         import streamlit as st
-        st.secrets.get = MagicMock(return_value="ok")
+        st.secrets.get = _password_secrets_mock("ok")
         # When authed, _password_gate returns True without raising
         mod = _load_admin_module()
         # Calling directly to verify the return value path
@@ -102,7 +115,7 @@ class TestFilterHelpers:
     def test_feedback_filter_mapping(self):
         _install_streamlit_mock(authed=True)
         import streamlit as st
-        st.secrets.get = MagicMock(return_value="dummy")
+        st.secrets.get = _password_secrets_mock("dummy")
         mod = _load_admin_module()
         assert mod._feedback_filter_value("Όλες") is None
         assert mod._feedback_filter_value("Θετικό feedback") == "positive"
@@ -112,7 +125,7 @@ class TestFilterHelpers:
     def test_date_range_choices(self):
         _install_streamlit_mock(authed=True)
         import streamlit as st
-        st.secrets.get = MagicMock(return_value="dummy")
+        st.secrets.get = _password_secrets_mock("dummy")
         mod = _load_admin_module()
         d_all = mod._date_range_for_choice("Όλες")
         assert d_all == (None, None)
