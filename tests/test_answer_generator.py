@@ -74,7 +74,7 @@ class TestGenerateNonStreaming:
         call = client.generate.call_args
         system = call.kwargs.get("system") or call.args[0]
         user = call.kwargs.get("user") or call.args[1]
-        assert "Είσαι εξειδικευμένος βοηθός" in system
+        assert "Είσαι βοηθός για Έλληνες μηχανικούς" in system
         assert "X;" in user
         assert "chunk_1" in user
 

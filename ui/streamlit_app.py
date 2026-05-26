@@ -96,6 +96,20 @@ def _ensure_session_id() -> str:
 # ---------- rendering ----------
 
 def _render_welcome(sample_clicked_key: str) -> None:
+    """Render the initial empty-state welcome with suggested questions.
+
+    Caller is responsible for only invoking this in the truly initial state
+    (no history, no pending query, not viewing a cached entry).  As a defensive
+    second line, we also bail out here if any of those flags are set — this
+    guarantees suggested-question buttons never appear alongside an answer
+    even under unusual rerun ordering.
+    """
+    if (
+        st.session_state.get("pending_query")
+        or st.session_state.get("viewing_history_id") is not None
+    ):
+        return
+
     st.markdown("### Καλώς ήρθατε στον Δομικό RAG")
     st.write(
         "Αυτό είναι ένα βοηθητικό εργαλείο για ερωτήματα ελληνικής πολεοδομικής "
@@ -201,7 +215,11 @@ def _render_live_source_cards(response: AnswerResponse) -> None:
 
 def _render_response_body(response: AnswerResponse) -> None:
     if response.refused:
-        st.warning("⚠ Το σύστημα αρνήθηκε να απαντήσει — οι διαθέσιμες πηγές δεν επαρκούν.")
+        # Softened from a hard warning: the model often still produces useful
+        # partial guidance even when it flags incomplete coverage.
+        st.info(
+            "ℹ️ Μερική απάντηση — οι διαθέσιμες πηγές δεν καλύπτουν πλήρως το ερώτημα."
+        )
     if response.has_invalid_citations:
         st.info(
             "Σημείωση: το μοντέλο αναφέρθηκε σε απόσπασμα που δεν παρασχέθηκε. "
@@ -209,6 +227,7 @@ def _render_response_body(response: AnswerResponse) -> None:
         )
 
     st.markdown(_replace_citations_for_display(response.answer_text), unsafe_allow_html=True)
+    st.markdown("")  # vertical breathing room between answer and sources
     _render_live_source_cards(response)
 
 
@@ -216,11 +235,14 @@ def _render_cached_entry(entry: QueryLogEntry, logger: QueryLogger) -> None:
     st.markdown(f"### {entry.query}")
     st.caption(f"Αποθηκευμένη ερώτηση · {_short_ts(entry.timestamp)}")
     if entry.refused:
-        st.warning("⚠ Το σύστημα είχε αρνηθεί να απαντήσει σε αυτή την ερώτηση.")
+        st.info(
+            "ℹ️ Μερική απάντηση — οι διαθέσιμες πηγές δεν καλύπτουν πλήρως το ερώτημα."
+        )
     st.markdown(
         _replace_citations_for_display(entry.answer),
         unsafe_allow_html=True,
     )
+    st.markdown("")  # breathing room before sources
     _render_source_list_from_metadata(entry.chunks_used)
 
     if entry.feedback:
@@ -262,15 +284,16 @@ def _render_sidebar_history(
 # ---------- pipeline execution ----------
 
 def _run_query(query: str, session_id: str, top_k: int) -> None:
-    """Paragraph-buffered answer display + final formatted render.
+    """Collect-then-render: drain the token stream silently, then render once.
 
-    Tokens are accumulated and the markdown placeholder is updated only when a
-    paragraph boundary (double newline) is detected.  This avoids the choppy
-    word-by-word effect of write_stream while still giving progressive feedback.
-    A "Σύνταξη απάντησης..." indicator is shown until the first paragraph lands.
+    The previous paragraph-buffered approach leaked into word-by-word output:
+    once `accumulated` contained "\\n\\n", the substring stayed there for the
+    rest of the stream, so every subsequent token re-ran placeholder.markdown.
+    Instead we just consume the iterator with no UI side effects and let
+    _render_response_body() do the single authoritative render at the end.
 
-    After streaming the placeholder is cleared and _render_response_body() does
-    the authoritative render (citations as superscripts, refusal notice, etc.).
+    Spinners give the user something to look at: retrieval first, generation
+    second.
     """
     pipeline = _get_pipeline()
 
@@ -282,21 +305,13 @@ def _run_query(query: str, session_id: str, top_k: int) -> None:
     with st.spinner("Αναζήτηση και ανάλυση πηγών..."):
         token_iter = asyncio.run(_start_stream())
 
-    placeholder = st.empty()
-    placeholder.caption("⏳ Σύνταξη απάντησης…")
+    with st.spinner("⏳ Σύνταξη απάντησης…"):
+        # Drain the streaming iterator. Do NOT push partial text to the UI —
+        # we want the whole, formatted answer to appear at once.
+        for _ in token_iter:
+            pass
+        response = pipeline.finalize_stream()
 
-    accumulated = ""
-    for token in token_iter:
-        accumulated += token
-        if "\n\n" in accumulated:
-            placeholder.markdown(accumulated, unsafe_allow_html=False)
-
-    # Flush: handles short answers (no \n\n) and the final partial paragraph.
-    if accumulated:
-        placeholder.markdown(accumulated, unsafe_allow_html=False)
-
-    response = pipeline.finalize_stream()
-    placeholder.empty()
     _render_response_body(response)
 
     if response.query_id is not None:
