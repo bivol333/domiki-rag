@@ -32,10 +32,11 @@ def _make_hit(article: str, text: str, page: int = 10) -> RankedHit:
 
 class TestSystemPrompt:
     def test_prompt_is_greek(self):
-        assert "Είσαι εξειδικευμένος βοηθός" in SYSTEM_PROMPT
+        # Opening establishes the engineer-audience persona in Greek.
+        assert "Είσαι βοηθός για Έλληνες μηχανικούς" in SYSTEM_PROMPT
 
     def test_prompt_contains_critical_rules(self):
-        # Citation rule
+        # Citation rule — format must be preserved exactly (parser depends on it)
         assert "[Source: chunk_id_X]" in SYSTEM_PROMPT
         # Refusal rule
         assert REFUSAL_PHRASE in SYSTEM_PROMPT
@@ -48,11 +49,32 @@ class TestSystemPrompt:
     def test_prompt_forbids_emoji(self):
         assert "Δεν χρησιμοποιείς emoji" in SYSTEM_PROMPT
 
+    def test_prompt_engineer_persona(self):
+        # Audience: named engineer disciplines
+        assert "πολιτικούς" in SYSTEM_PROMPT
+        assert "τοπογράφους" in SYSTEM_PROMPT
+        assert "αρχιτέκτονες" in SYSTEM_PROMPT
+        # Helpful, not know-it-all
+        assert "αλάνθαστη αυθεντία" in SYSTEM_PROMPT
+
+    def test_prompt_tone_and_structure(self):
+        # Concise / κοφτό tone marker
+        assert "Κοφτό" in SYSTEM_PROMPT
+        # BLUF / conclusion-first instruction
+        assert "verdict" in SYSTEM_PROMPT
+        # Scale-to-complexity guard
+        assert "απλές ερωτήσεις" in SYSTEM_PROMPT
+
+    def test_prompt_completeness_signal(self):
+        assert "ΠΛΗΡΟΤΗΤΑ" in SYSTEM_PROMPT
+        # Example completeness note must reference ΝΟΚ/ΓΠΣ pattern
+        assert "ΝΟΚ" in SYSTEM_PROMPT
+
     def test_prompt_snapshot_hash(self):
         """If this fails, the locked system prompt was changed. Confirm intent then update hash."""
         digest = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
         # Snapshot — update only when the prompt is intentionally edited.
-        expected = "a300e77eb68e7791bfcbb1f8efe2d3d998eef5cfc709cbceed8433e6a548d6f5"
+        expected = "9847790240c8a367b0bf84bcaad15fec76da93a32026acb94da4ef24e02bac28"
         assert digest == expected, (
             f"SYSTEM_PROMPT changed!\n  expected: {expected}\n  got:      {digest}"
         )
