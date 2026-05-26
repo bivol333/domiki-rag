@@ -262,7 +262,16 @@ def _render_sidebar_history(
 # ---------- pipeline execution ----------
 
 def _run_query(query: str, session_id: str, top_k: int) -> None:
-    """Stream the answer and render the full result + feedback widget."""
+    """Paragraph-buffered answer display + final formatted render.
+
+    Tokens are accumulated and the markdown placeholder is updated only when a
+    paragraph boundary (double newline) is detected.  This avoids the choppy
+    word-by-word effect of write_stream while still giving progressive feedback.
+    A "Σύνταξη απάντησης..." indicator is shown until the first paragraph lands.
+
+    After streaming the placeholder is cleared and _render_response_body() does
+    the authoritative render (citations as superscripts, refusal notice, etc.).
+    """
     pipeline = _get_pipeline()
 
     async def _start_stream():
@@ -270,14 +279,21 @@ def _run_query(query: str, session_id: str, top_k: int) -> None:
             query=query, session_id=session_id, top_k=top_k,
         )
 
-    placeholder = st.empty()
     with st.spinner("Αναζήτηση και ανάλυση πηγών..."):
         token_iter = asyncio.run(_start_stream())
 
-    def _wrapped_iter():
-        yield from token_iter
+    placeholder = st.empty()
+    placeholder.caption("⏳ Σύνταξη απάντησης…")
 
-    placeholder.write_stream(_wrapped_iter())
+    accumulated = ""
+    for token in token_iter:
+        accumulated += token
+        if "\n\n" in accumulated:
+            placeholder.markdown(accumulated, unsafe_allow_html=False)
+
+    # Flush: handles short answers (no \n\n) and the final partial paragraph.
+    if accumulated:
+        placeholder.markdown(accumulated, unsafe_allow_html=False)
 
     response = pipeline.finalize_stream()
     placeholder.empty()
